@@ -1,0 +1,148 @@
+#define TRUE 1
+#define FALSE 0
+
+#define BLOCK_SIZE 16
+
+#define ANALOG_INPUT_LEFT_CHANNEL 0
+#define ANALOG_INPUT_RIGHT_CHANNEL 1
+#define ANALOG_OUTPUT_LEFT_CHANNEL 0
+#define ANALOG_OUTPUT_RIGHT_CHANNEL 1
+
+#define W_LENGTH 700
+#define S_LENGTH 512
+#define MU 0.01
+#define DELTA 0.001
+
+#define MSE_THRESHOLD 0.001
+
+#include <Bela.h>
+#include <algorithm>
+#include <libraries/Scope/Scope.h>
+#include "/root/Bela/projects/secondary_path/s_path.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+
+// Sine synthesis
+float gFrequency1 = 68.0;
+float gPhase1;
+float gFrequency2 = 102.0;
+float gPhase2;
+float gInverseSampleRate;
+
+
+
+int gAudioChannelNum; // number of audio channels to iterate over
+int gAnalogChannelNum; // number of analog channels to iterate over
+
+Scope scope;
+
+float w_vec[W_LENGTH];
+float xsw_vec[W_LENGTH];
+float x_vec[W_LENGTH];
+float norm_factor = 0.0;
+
+float* value_in_block;
+float* value_out_block;
+
+FILE *fp;
+bool file_flag = FALSE;
+
+float value_out = 0.0;
+float value_in = 0.0;
+float err = 0.0;
+float grad_coeff = 0.0;
+float MSE = 10.0;
+float smooth_factor = 0.99;
+double result = 0;
+float xsw = 0.0;
+
+bool setup(BelaContext* context, void* userArg)
+{
+	scope.setup(1, context->audioSampleRate);
+	// Check that we have the same number of inputs and outputs.
+	if(context->audioInChannels != context->audioOutChannels ||
+			context->analogInChannels != context-> analogOutChannels){
+		printf("Different number of outputs and inputs available. Working with what we have.\n");
+	}
+	
+	gInverseSampleRate = 1.0 / context->audioSampleRate;
+
+	// If the amout of audio and analog input and output channels is not the same
+	// we will use the minimum between input and output
+	gAudioChannelNum = std::min(context->audioInChannels, context->audioOutChannels);
+	gAnalogChannelNum = std::min(context->analogInChannels, context->analogOutChannels);
+	
+	
+	for (unsigned int i=0; i<W_LENGTH; i++) {
+		w_vec[i] = 0.0;
+		xsw_vec[i] = 0.0;
+		x_vec[i] = 0.0;
+	}
+
+	return true;
+	
+	clock_t start, end;
+	start = clock();
+	unsigned int times = 10000;
+	for(unsigned int n = 0; n < times; ++n)
+		render(context, userArg);
+	end = clock(); //record time end
+	result = (double)(end - start)/(double)times;
+	cout << "result : " << ((result) / CLOCKS_PER_SEC) << " seconds" << endl;
+	printf("%f", result / CLOCKS_PER_SEC);
+	// OR cout << "result : " << result << " microseconds" << endl;
+	// OR printf("%f", result);
+	// now you can return true if you want to run the audio processing, or false if you want to stop here
+	return false;
+}
+
+void render(BelaContext* context, void* userArg)
+{
+	float y_out = 0.0;
+	float x1 = 0.0;
+	// Simplest possible case: pass inputs through to outputs
+	for(unsigned int n = 0; n < context->audioFrames; n++) {
+		
+		value_in = audioRead(context, n, ANALOG_INPUT_LEFT_CHANNEL);
+		
+		x1 = audioRead(context, n, ANALOG_INPUT_RIGHT_CHANNEL);
+		
+		
+		for (unsigned int i= W_LENGTH -1; i>0; i-- ){
+			x_vec[i] = x_vec[i-1];
+		}
+		x_vec[0] = x1;
+		
+		y_out = 0.0;
+		for (unsigned int i=0; i<W_LENGTH; i++ ){
+			y_out += w_vec[i]*x_vec[i];
+		}
+		audioWrite(context, n, ANALOG_OUTPUT_RIGHT_CHANNEL, -y_out);
+		
+		
+		for (unsigned int i=W_LENGTH-1; i>0; i-- ){
+			xsw_vec[i] = xsw_vec[i-1];
+		}
+		
+		xsw = 0.0;
+		for( unsigned int i=0; i<S_LENGTH; i++ ) {
+			xsw += x_vec[i]*s_path[i];
+		}
+		xsw_vec[0] = xsw;
+		
+		// norm_factor = norm_factor + xsw*xsw - xsw_vec[W_LENGTH-1]*xsw_vec[W_LENGTH-1];
+	
+	}
+	// After block signal is appended, NLMS algorithm run!
+	
+	
+	err = value_in;
+	// float grad_coeff = MU*err/(norm_factor+DELTA);
+	float grad_coeff = MU*err;
+	for (unsigned int i=0; i<W_LENGTH; i++ ){
+		w_vec[i] = w_vec[i] + grad_coeff*xsw_vec[i];
+	}
+	scope.log(err);
+}
